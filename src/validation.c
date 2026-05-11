@@ -1051,6 +1051,12 @@ lyd_validate_dummy_when(const struct lyd_node *first, const struct lyd_node *par
         xp_opts = LYXP_ACCESS_TREE_ALL;
     }
 
+    /* the dummy when is a speculative check ("would the when be true if this node existed?");
+     * referenced data nodes whose own when has not been resolved (e.g. left in the tree after a
+     * LY_VCODE_NOWHEN diagnostic in LYD_VALIDATE_MULTI_ERROR mode) must not turn this into a
+     * LY_EINCOMPLETE -> LOGINT, so evaluate against the data values directly */
+    xp_opts |= LYXP_IGNORE_WHEN;
+
     /* evaluate all when */
     rc = lyd_validate_node_when(tree, dummy, snode, xp_opts, disabled);
     if (rc == LY_EINCOMPLETE) {

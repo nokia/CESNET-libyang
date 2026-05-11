@@ -159,6 +159,72 @@ test_mandatory_when(void **state)
 }
 
 static void
+test_mandatory_when_unresolved_dep(void **state)
+{
+    /* Regression test for an internal-error panic ("LOGINT" at validation.c
+     * lyd_validate_dummy_when) triggered in LYD_VALIDATE_MULTI_ERROR mode by
+     * the following data shape:
+     *
+     *   - a sibling node X has a "when" that evaluates FALSE on first try, so
+     *     a LY_VCODE_NOWHEN diagnostic is emitted but X stays in the tree
+     *     without LYD_WHEN_TRUE because validation continues collecting errors;
+     *   - a mandatory sibling Y is missing and has its own "when" that
+     *     references X.
+     *
+     * The deferred dummy-when evaluation for Y looks up X, sees lysc_has_when()
+     * + LYD_WHEN_TRUE=0, and returns LY_EINCOMPLETE, which lyd_validate_dummy_when
+     * previously turned into LOGINT/LY_EINT. With the fix that path passes
+     * LYXP_IGNORE_WHEN, so the speculative evaluation reads X's value directly
+     * and the regular "Mandatory node ... instance does not exist." diagnostic
+     * is emitted alongside the original NOWHEN error.
+     */
+    struct lyd_node *tree;
+    const char *schema =
+            "module a {\n"
+            "    namespace urn:tests:a;\n"
+            "    prefix a;\n"
+            "    yang-version 1.1;\n"
+            "\n"
+            "    container cont {\n"
+            "        leaf trigger {\n"
+            "            type boolean;\n"
+            "        }\n"
+            "        leaf gate {\n"
+            "            when \"../trigger = 'true'\";\n"
+            "            type boolean;\n"
+            "        }\n"
+            "        leaf required {\n"
+            "            when \"../gate = 'true'\";\n"
+            "            mandatory true;\n"
+            "            type boolean;\n"
+            "        }\n"
+            "    }\n"
+            "}";
+
+    UTEST_ADD_MODULE(schema, LYS_IN_YANG, NULL, NULL);
+
+    /* Data: trigger=false makes gate's when false; gate is kept in the tree
+     * with LYD_WHEN_TRUE=0 because LYD_VALIDATE_MULTI_ERROR collects errors
+     * instead of failing fast. Then mandatory `required` is missing and its
+     * dummy when evaluation traverses to the polluted `gate` node. */
+    CHECK_PARSE_LYD_PARAM(
+            "<cont xmlns=\"urn:tests:a\">"
+            "<trigger>false</trigger>"
+            "<gate>true</gate>"
+            "</cont>",
+            LYD_XML, 0, LYD_VALIDATE_PRESENT | LYD_VALIDATE_MULTI_ERROR, LY_EVALID, tree);
+
+    /* The most recent error (LIFO) must be the mandatory-missing diagnostic
+     * produced by lyd_validate_dummy_when after LYXP_IGNORE_WHEN allows the
+     * speculative evaluation to proceed against gate's value. Without the fix,
+     * libyang would instead emit "Internal error (...validation.c:...)" here. */
+    CHECK_LOG_CTX("Mandatory node \"required\" instance does not exist.", "/a:cont", 0);
+    /* The original NOWHEN diagnostic that "polluted" the tree must still be
+     * present as the earlier error. */
+    CHECK_LOG_CTX("When condition \"../trigger = 'true'\" not satisfied.", "/a:cont/gate", 0);
+}
+
+static void
 test_type_incomplete_when(void **state)
 {
     struct lys_module *mod;
@@ -1640,6 +1706,7 @@ main(void)
         UTEST(test_when_rpc_reply),
         UTEST(test_mandatory),
         UTEST(test_mandatory_when),
+        UTEST(test_mandatory_when_unresolved_dep),
         UTEST(test_type_incomplete_when),
         UTEST(test_unprefixed_ident),
         UTEST(test_minmax),
